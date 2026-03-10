@@ -13,6 +13,83 @@ provider "aws" {
   region = var.aws_region
 }
 
+data "aws_caller_identity" "current" {}
+
+#
+# KMS key for bucket encryption
+#
+resource "aws_kms_key" "s3_key" {
+  description             = "KMS key for AI Zero Trust S3 bucket encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+}
+
+resource "aws_kms_alias" "s3_key_alias" {
+  name          = "alias/ai-zero-trust-s3-key"
+  target_key_id = aws_kms_key.s3_key.key_id
+}
+
+#
+# Logging bucket
+#
+resource "aws_s3_bucket" "log_bucket" {
+  bucket = "${var.bucket_name}-logs"
+
+  tags = {
+    Name        = "${var.bucket_name}-logs"
+    Environment = "Dev"
+    Project     = "ai-zero-trust-cloud-security"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "log_bucket" {
+  bucket                  = aws_s3_bucket.log_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  rule {
+    id     = "log-retention"
+    status = "Enabled"
+
+    expiration {
+      days = 90
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+#
+# Main secure bucket
+#
+#checkov:skip=CKV_AWS_144:Cross-region replication is outside the scope of this demo project
 resource "aws_s3_bucket" "secure_bucket" {
   bucket = var.bucket_name
 
@@ -21,4 +98,65 @@ resource "aws_s3_bucket" "secure_bucket" {
     Environment = "Dev"
     Project     = "ai-zero-trust-cloud-security"
   }
+}
+
+resource "aws_s3_bucket_public_access_block" "secure_bucket" {
+  bucket                  = aws_s3_bucket.secure_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "secure_bucket" {
+  bucket = aws_s3_bucket.secure_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "secure_bucket" {
+  bucket = aws_s3_bucket.secure_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_logging" "secure_bucket" {
+  bucket        = aws_s3_bucket.secure_bucket.id
+  target_bucket = aws_s3_bucket.log_bucket.id
+  target_prefix = "access-logs/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "secure_bucket" {
+  bucket = aws_s3_bucket.secure_bucket.id
+
+  rule {
+    id     = "transition-and-expire"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    expiration {
+      days = 365
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+  }
+}
+
+resource "aws_s3_bucket_notification" "secure_bucket" {
+  bucket = aws_s3_bucket.secure_bucket.id
+
+  eventbridge = true
 }
