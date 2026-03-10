@@ -16,12 +16,28 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 #
-# KMS key for bucket encryption
+# KMS key and policy
 #
 resource "aws_kms_key" "s3_key" {
   description             = "KMS key for AI Zero Trust S3 bucket encryption"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Id      = "key-default-1"
+    Statement = [
+      {
+        Sid    = "EnableRootPermissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_kms_alias" "s3_key_alias" {
@@ -32,6 +48,7 @@ resource "aws_kms_alias" "s3_key_alias" {
 #
 # Logging bucket
 #
+#checkov:skip=CKV_AWS_144:Cross-region replication is outside the scope of this demo project
 resource "aws_s3_bucket" "log_bucket" {
   bucket = "${var.bucket_name}-logs"
 
@@ -73,8 +90,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_bucket" {
   bucket = aws_s3_bucket.log_bucket.id
 
   rule {
-    id     = "log-retention"
+    id     = "log-lifecycle"
     status = "Enabled"
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
 
     expiration {
       days = 90
@@ -84,6 +105,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_bucket" {
       noncurrent_days = 30
     }
   }
+}
+
+resource "aws_s3_bucket_notification" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  eventbridge = true
 }
 
 #
@@ -137,8 +164,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "secure_bucket" {
   bucket = aws_s3_bucket.secure_bucket.id
 
   rule {
-    id     = "transition-and-expire"
+    id     = "secure-bucket-lifecycle"
     status = "Enabled"
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
 
     transition {
       days          = 30
